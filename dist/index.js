@@ -20778,16 +20778,11 @@ function wrappy (fn, cb) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getChatGPTResponse = void 0;
 const openai_1 = __nccwpck_require__(9211);
-const getChatGPTResponse = async (configuration) => {
+const getChatGPTResponse = async (configuration, messages) => {
     const client = new openai_1.OpenAIApi(configuration);
     const response = await client.createChatCompletion({
         model: "gpt-3.5-turbo",
-        messages: [
-            {
-                role: "user",
-                content: "なんか面白いこと言って",
-            },
-        ],
+        messages,
     });
     return response.data.choices[0].message?.content;
 };
@@ -20872,35 +20867,203 @@ var __importStar = (this && this.__importStar) || function (mod) {
     return result;
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.run = void 0;
+const core = __importStar(__nccwpck_require__(2186));
+const run_1 = __nccwpck_require__(7764);
+try {
+    (0, run_1.run)();
+}
+catch (e) {
+    core.setFailed(e);
+}
+
+
+/***/ }),
+
+/***/ 7764:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.run = exports.BOT_KEYWORD = exports.USER_KEYWORD = void 0;
 const core = __importStar(__nccwpck_require__(2186));
 const github = __importStar(__nccwpck_require__(5438));
 const openai = __importStar(__nccwpck_require__(9211));
 const chatgpt_1 = __nccwpck_require__(8322);
 const github_1 = __nccwpck_require__(978);
-// const MENTION = "@chatgpt-issue-commentator";
+exports.USER_KEYWORD = "/chatgpt";
+exports.BOT_KEYWORD = "<!-- This comment is a response by chatgpt-issue-commentator. -->";
 const run = async () => {
     const githubToken = core.getInput("github-token");
+    const octokit = github.getOctokit(githubToken);
     const openaiApiKey = core.getInput("openai-api-key");
+    const githubIssueContext = core.getInput("github-issue-context");
     const context = github.context;
-    const issueNumber = context.payload.issue?.number;
-    if (!issueNumber) {
+    const payload = context.payload;
+    // Only support github issue.
+    const issueNumber = payload.issue?.number;
+    if (!issueNumber)
         throw new Error("failed to get issue number.");
-    }
-    const chatGPTResponse = await (0, chatgpt_1.getChatGPTResponse)(new openai.Configuration({
+    // Only perform when includes `/chatgpt` in comment.
+    if (!hasTriggerWord(payload.comment?.body))
+        return;
+    const { owner, repo } = context.repo;
+    // Get issue data.
+    const issue = await octokit.rest.issues.get({
+        owner,
+        repo,
+        issue_number: issueNumber,
+    });
+    const issueComments = await octokit.rest.issues.listComments({
+        owner,
+        repo,
+        issue_number: issueNumber,
+    });
+    const allCommentsOrderByCreatedAt = issueComments.data.sort((a, b) => {
+        const aCreatedAt = new Date(a.created_at).getTime();
+        const bCreatedAt = new Date(b.created_at).getTime();
+        if (aCreatedAt < bCreatedAt)
+            return -1;
+        if (aCreatedAt > bCreatedAt)
+            return 1;
+        return 0;
+    });
+    // List current chat messages.
+    let messages = allCommentsOrderByCreatedAt
+        .map(convertToChatCompletionRequestMessage)
+        .filter((v) => v !== undefined);
+    // Generate next chat message.
+    const configuration = new openai.Configuration({
         apiKey: openaiApiKey,
-    }));
-    if (!chatGPTResponse) {
+    });
+    // TODO: not implement
+    // if enable `github-issue-context`.
+    // if (Number(githubIssueContext) === 1) {
+    //   const systemPromptParts = generateSystemPrompts(
+    //     issue.data,
+    //     issueComments.data
+    //   );
+    //   messages = [
+    //     {
+    //       role: "system",
+    //       content: systemPromptParts[0],
+    //     },
+    //     ...messages,
+    //   ];
+    // }
+    const chatGPTResponse = await (0, chatgpt_1.getChatGPTResponse)(configuration, messages);
+    if (!chatGPTResponse)
         throw new Error("failed to get chatgpt response.");
-    }
-    await (0, github_1.createGitHubIssueComment)(githubToken, issueNumber, chatGPTResponse);
+    // Comment to issue.
+    await (0, github_1.createGitHubIssueComment)(githubToken, issueNumber, `${exports.BOT_KEYWORD}
+
+${chatGPTResponse}
+`);
 };
 exports.run = run;
-try {
-    (0, exports.run)();
-}
-catch (e) {
-    core.setFailed(e instanceof Error ? e.message : JSON.stringify(e));
+const hasTriggerWord = (body) => {
+    const TRIGGER_WORD = exports.USER_KEYWORD;
+    return body !== "" && body.includes(TRIGGER_WORD);
+};
+const convertToChatCompletionRequestMessage = (comment) => {
+    const message = { role: "user", content: "" };
+    if (comment.body?.includes(exports.USER_KEYWORD)) {
+        message.role = "user";
+        message.content = comment.body?.replace(exports.USER_KEYWORD, "");
+    }
+    else if (comment.body?.includes(exports.BOT_KEYWORD)) {
+        message.role = "user";
+        message.content = comment.body?.replace(exports.BOT_KEYWORD, "");
+    }
+    else {
+        return undefined;
+    }
+    return message;
+};
+const generateSystemPrompts = (issueData, issueComments) => {
+    const fullSystemPrompt = `
+#Instruction
+You are a skilled software engineer. Based on the content of the Issue and Issue Comment provided below, please become a conversation partner in the following discussions.
+Due to the character limit, the text will be divided into several messages. When you reply to a message, please send the whole text without dividing it in the middle.
+
+#Issue Content
+##number
+${issueData.number}
+
+##title
+${issueData.title}
+
+##description
+${issueData.description}
+
+##body
+${issueData.body}
+
+##url
+${issueData.html_url}
+
+##pull_request_url
+{issueData.pull_request?.html_url}
+
+##state
+${issueData.state}
+
+##created_at
+${issueData.created_at}
+
+##created_at
+${issueData.updated_at}
+
+##assignee
+${issueData.assignee?.login}
+
+##Issue Comment Content
+${issueComments
+        .map((comment) => `
+##comment at ${comment.created_at}
+
+body: ${comment.body}
+user: ${comment.user?.login}
+url: ${comment.html_url}
+`)
+        .join("\n")}`;
+    return sliceTextByTokens(fullSystemPrompt, 500);
+};
+function sliceTextByTokens(text, approxTokensLimit) {
+    const chunks = [];
+    // Assuming 1 token = 1.5 characters, as an approximation
+    const approxCharsLimit = approxTokensLimit / 1.5;
+    let startIndex = 0;
+    while (startIndex < text.length) {
+        const endIndex = startIndex + Math.min(approxCharsLimit, text.length - startIndex);
+        const chunk = text.slice(startIndex, endIndex);
+        chunks.push(chunk);
+        startIndex = endIndex;
+    }
+    return chunks;
 }
 
 
